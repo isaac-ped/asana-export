@@ -6,6 +6,12 @@ import os
 import urllib2
 import traceback
 import time
+import logging
+
+logging.basicConfig(format='%(asctime)s %(message)s', level=logging.INFO)
+logger = logging.getLogger('asana');
+
+ACCESS_TOKEN = '0/a88c38a3cb10a9ecad58fe22cf239289'
 
 resources = {
     'workspaces':  {
@@ -50,18 +56,19 @@ resources = {
 }
 
 flat_resource_file = 'resources_by_id.json'
-save_at = 100
+save_at = 200
 
 
 def index_resources():
 
     start_time = time.time()
-
+    
+    print 'loading...'
     if os.path.exists(flat_resource_file):
         resources_by_id = json.load(open(flat_resource_file))
     else:
         resources_by_id = {}
-
+    print 'loaded'
     resource_gen = expand_resource('workspaces', resources['workspaces'], resources_by_id)
     resource_gen.send(None)
     resource = None
@@ -74,15 +81,17 @@ def index_resources():
                     resources_by_id[str(resource['id'])] = resource
                     i += 1
                     if i % save_at == 0:
-                        print 'DUMPING!'
-                        print 'Elapsed time at {}: {} minutes'.format(i, (time.time()-start_time)/60.)
+                        loger.info('DUMPING!')
+                        logger.info('Elapsed time at {}: {} minutes'.format(i, (time.time()-start_time)/60.))
+                        dump_start = time.time()
                         json.dump(resources_by_id, open(flat_resource_file, 'w'), indent=2)
+                        logger.info('JSON dump took {} seconds'.format(time.time()-dump_start))
     except StopIteration:
         return resource
 
 
-client = asana.Client.access_token('0/b4001d4abd47fab6953e53d9f7e0995b')
-
+client = asana.Client.access_token(ACCESS_TOKEN)
+ 
 def expand_resource(resource, contents, resources_by_id, **parent_resources):
     output = []
     call = contents.get('__call__', 'find_all')
@@ -92,14 +101,13 @@ def expand_resource(resource, contents, resources_by_id, **parent_resources):
             gen = getattr(client_field, call)(fields=contents['_fields'], **parent_resources)
             for i, asana_object in enumerate(gen):
 
-
                 object_out = asana_object
 
                 if str(object_out['id']) in resources_by_id:
                     try:
-                        print 'SKIPPING {}: {}'.format(resource, object_out['name'])
+                        logger.info('SKIPPING {}: {}'.format(resource, object_out['name']))
                     except Exception:
-                        print 'Skipping {}: {}'.format(resource, object_out['id'])
+                        logger.info('Skipping {}: {}'.format(resource, object_out['id']))
                     object_out = resources_by_id[str(object_out['id'])]
                     output.append(object_out)
                     continue
@@ -130,34 +138,59 @@ def expand_resource(resource, contents, resources_by_id, **parent_resources):
             break
         except Exception as e:
             traceback.print_exc()
-            print 'ERROR: {}'.format(e)
-            print 'Retrying...'
+            logger.error('ERROR: {}'.format(e))
+            logger.info('Retrying...')
 
 def fetch_attachments(client, workspaces, folder):
+    i=0
+    start_time = time.time()
     for workspace in workspaces:
-        teams = workspace['teams']
+        teams = workspace['teams'] or []
         for team in teams:
-            projects = team.get('projects', [])
+            projects = team.get('projects', []) or []
             for project in projects:
-                tasks = project.get('tasks', [])
+                tasks = project.get('tasks', []) or [] 
                 for task in tasks:
-                    attachments = task.get('attachments', [])
+                    attachments = task.get('attachments', []) or []
                     for attachment in attachments:
                         if attachment['host'] == 'asana':
-                            filename = os.path.join(folder, str(attachment['id']) + '.' + attachment['name'])
-                            url = client.attachments.find_by_id(attachment['id'], fields='download_url')['download_url']
+                            i+=1
+                            if i % 200 == 0:
+                                logger.info('{} attachments done at {} minutes'.format(i, (time.time()-start_time)/60.))
+                            try:
+                                filename = os.path.join(folder, str(attachment['id']) + '.' + attachment['name'])
+                                if os.path.exists(filename):
+                                    continue
+                                url = client.attachments.find_by_id(attachment['id'], fields='download_url')['download_url']
 
-                            response = urllib2.urlopen(url)
-                            open(filename, 'w').write(response.read())
+                                response = urllib2.urlopen(url)
+                                open(filename, 'w').write(response.read())
+                            except:
+                                traceback.print_exc()
+
+def create_summary(workspaces, summary_file):
+    output = {}
+    for workspace in workspaces:
+        workspace_out = {}
+        teams = workspace['teams'] or []
+        for team in teams:
+            projects = team.get('projects', []) or []
+            team_out = [project['name'] for project in projects]
+            workspace_out[team['name']] = team_out
+        output[workspace['name']] = workspace_out
+    json.dump(output, open(summary_file,'w'), indent=2, sort_keys=True)
+
 
 if __name__ == '__main__':
 
     start_time = time.time()
+    logger.info("Starting export.")
     workspaces = index_resources()
-    json.dump(workspaces, open('workspaces.json', 'w'), indent=2)
-    print "finished Json export at {} minutes. Fetching attachments".format((time.time()-start_time)/60.)
+    json.dump(workspaces, open('workspaces.json', 'w'), indent=2, sort_keys=True)
+    logger.info("finished Json export at {} minutes. Fetching attachments".format((time.time()-start_time)/60.))
     if not os.path.exists('attachments'):
         os.mkdir('attachments')
     fetch_attachments(client, workspaces, 'attachments')
-    print "attachments fetched at {} minutes.".format((time.time()-start_time)/60.)
-    print "Done"
+    logger.info("attachments fetched at {} minutes.".format((time.time()-start_time)/60.))
+    logger.info("creating summary")
+    create_summary(workspaces, 'workspace_summary.json')

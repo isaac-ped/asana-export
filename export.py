@@ -51,7 +51,6 @@ import urllib2
 
 client = asana.Client.access_token('0/b4001d4abd47fab6953e53d9f7e0995b')
 
-MAX = 2
 def expand_resource(resource, contents, **parent_resources):
     output = []
     call = contents.get('__call__', 'find_all')
